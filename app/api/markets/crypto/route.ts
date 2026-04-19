@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
+import { getLiveCryptoMarkets } from "@/lib/live-intel";
 
 export async function GET() {
-  return NextResponse.json({
-    assets: [
-      { id: "bitcoin", symbol: "btc", name: "Bitcoin", priceUsd: 0, change24h: 0 },
-      { id: "ethereum", symbol: "eth", name: "Ethereum", priceUsd: 0, change24h: 0 }
-    ]
-  });
+  try {
+    return NextResponse.json({
+      assets: await getLiveCryptoMarkets()
+    });
+  } catch {
+    return NextResponse.json({ error: "Failed to fetch CoinGecko market feed" }, { status: 502 });
+  }
 }

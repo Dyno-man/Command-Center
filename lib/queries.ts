@@ -1,4 +1,5 @@
 import { mockDashboard, mockEvents } from "@/lib/mock-data";
+import { getLiveEventClusters } from "@/lib/live-intel";
 
 export function getDashboard() {
   return mockDashboard;
@@ -9,7 +10,13 @@ export function getEvents() {
 }
 
 export async function getEventDetail(id: string) {
-  const event = mockEvents.find((candidate) => candidate.id === id) ?? null;
+  let event = mockEvents.find((candidate) => candidate.id === id) ?? null;
+
+  if (!event && id.startsWith("live-")) {
+    const livePayload = await getLiveEventClusters();
+    event = livePayload.events.find((candidate) => candidate.id === id) ?? null;
+  }
+
   if (!event) {
     return null;
   }
