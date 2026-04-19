@@ -1,20 +1,30 @@
 import {
   AdapterHealth,
   ProviderAdapter,
+  ProviderDefinition,
   ProviderClass,
   LatencyClass,
   ReliabilityClass,
   RightsPolicy,
   SourceRecord
 } from "@/lib/providers/types";
+import { getProviderDefinition } from "@/lib/providers/provider-registry";
 
 export abstract class BaseProviderAdapter implements ProviderAdapter {
+  protected readonly definition: ProviderDefinition;
+
   constructor(
     public readonly providerId: string,
     protected readonly providerClass: ProviderClass,
     protected readonly latencyClass: LatencyClass,
     protected readonly reliabilityClass: ReliabilityClass
-  ) {}
+  ) {
+    const definition = getProviderDefinition(providerId);
+    if (!definition) {
+      throw new Error(`Provider definition not found for ${providerId}`);
+    }
+    this.definition = definition;
+  }
 
   abstract fetchOnce(args?: Record<string, unknown>): Promise<SourceRecord[]>;
   abstract normalize(raw: unknown): Promise<SourceRecord[]>;
@@ -56,5 +66,13 @@ export abstract class BaseProviderAdapter implements ProviderAdapter {
       fetchedAt: new Date().toISOString(),
       ...partial
     };
+  }
+
+  protected getEndpointUrl(key?: string) {
+    if (!key) {
+      return this.definition.endpoints?.find((endpoint) => endpoint.enabled !== false)?.url ?? this.definition.baseUrl ?? "";
+    }
+
+    return this.definition.endpoints?.find((endpoint) => endpoint.key === key)?.url ?? this.definition.baseUrl ?? "";
   }
 }

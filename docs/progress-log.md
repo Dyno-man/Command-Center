@@ -108,3 +108,6 @@
 - added the planned historical intelligence store note to `docs/dev/architecture.md`
 - loosened validator parsing to tolerate common model markdown variations such as code fences and heading depth changes, and surfaced raw model text snippets in the UI when validation fails
 - tightened the live article gate so novelty, crime, and other weak general-interest stories are filtered out before country-topic grouping and agent recommendation
+- moved provider endpoint URLs into `lib/providers/provider-registry.ts` and updated adapters to read from registry-configured endpoints so new free sources can be plugged in from one obvious config surface
+- expanded GDELT from a single query into multiple market-relevant lanes, preserved lane metadata during normalization, added dedupe and stricter GDELT acceptance thresholds, and exposed GDELT lane/debug counts through live-intel meta for tuning
+- added `/api/intel/gdelt-debug` so accepted and rejected GDELT stories can be inspected by lane using the same dedupe and filtering path as production

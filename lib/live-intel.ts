@@ -16,11 +16,15 @@ import { getAgentPromptDocs } from "@/lib/agent-docs";
 import { validateCourseOfActionResponse } from "@/lib/course-of-action-validator";
 
 type NormalizedArticle = TopicArticle & {
+  provider: string;
+  queryLane?: string;
+  sourceDomain?: string;
   topic: Topic;
   region: Region;
   countryCode: string;
   coordinates: { x: number; y: number };
   marketRelevance: number;
+  laneEvidenceScore: number;
   rejectedReason?: string;
 };
 
@@ -56,6 +60,7 @@ const countryHints: CountryHint[] = [
   { code: "YE", region: "Middle East", coords: { x: 61, y: 48 }, keywords: ["yemen", "yemeni", "red sea", "aden", "houthi", "bab el-mandeb"] },
   { code: "CN", region: "Asia-Pacific", coords: { x: 77, y: 38 }, keywords: ["china", "chinese", "beijing", "south china sea"] },
   { code: "JP", region: "Asia-Pacific", coords: { x: 84, y: 34 }, keywords: ["japan", "japanese", "boj", "yen", "tokyo"] },
+  { code: "KP", region: "Asia-Pacific", coords: { x: 82, y: 32 }, keywords: ["north korea", "pyongyang", "dprk"] },
   { code: "TW", region: "Asia-Pacific", coords: { x: 80, y: 42 }, keywords: ["taiwan", "taiwanese", "taiwan strait", "taipei"] },
   { code: "KR", region: "Asia-Pacific", coords: { x: 82, y: 35 }, keywords: ["south korea", "korean", "seoul"] },
   { code: "IN", region: "Asia-Pacific", coords: { x: 69, y: 47 }, keywords: ["india", "indian", "new delhi", "mumbai"] },
@@ -117,6 +122,12 @@ function inferGeo(text: string, locations: SourceRecord["locations"]) {
   };
 }
 
+function geoTextForRecord(record: SourceRecord, lane?: string) {
+  const locationText = record.locations.map((location) => location.label).join(" ");
+  const laneText = lane?.replace(/_/g, " ") ?? "";
+  return `${record.title ?? ""} ${record.summary ?? ""} ${locationText} ${laneText}`;
+}
+
 function buildGroupSummary(topic: Topic, articles: TopicArticle[], countryCode: string) {
   const headlines = articles
     .slice()
@@ -163,8 +174,47 @@ function makeAssets(topic: Topic) {
   return [{ asset: "Country Risk", type: "Theme" as const, direction: "Mixed" as const, confidence: 60, rationale: "The topic may affect local market narratives and related watchlists." }];
 }
 
-function scoreMarketRelevance(title: string, summary: string, topic: Topic) {
+const laneSignals: Record<string, RegExp[]> = {
+  energy: [/\boil\b/, /\bgas\b/, /\blng\b/, /refinery/, /pipeline/, /\bopec\b/, /electricity/, /power grid/, /\bbrent\b/, /\bwti\b/, /crude/],
+  shipping: [/shipping/, /maritime/, /tanker/, /freight/, /cargo/, /port/, /red sea/, /suez/, /hormuz/, /vessel/, /strait/, /canal/, /container/],
+  trade: [/tariff/, /sanction/, /trade/, /supply chain/, /export/, /import/, /customs/, /copper/, /manufacturing/, /export control/],
+  monetary_policy: [/central bank/, /\bfed\b/, /\becb\b/, /\bboj\b/, /bank of england/, /inflation/, /interest rate/, /intervention/, /\byen\b/, /currency/, /\bfx\b/, /rate cut/, /rate hike/],
+  semiconductors: [/semiconductor/, /\bchip\b/, /chipmaking/, /foundry/, /\bfab\b/, /export control/, /\btsmc\b/, /\bnvidia\b/, /\basml\b/],
+  conflict: [/conflict/, /strike/, /attack/, /blockade/, /military/, /drone/, /missile/, /ballistic/, /navy/, /naval/, /ship/, /vessel/, /hormuz/, /red sea/, /taiwan strait/, /south china sea/]
+};
+
+function getLaneEvidenceScore(text: string, lane?: string) {
+  if (!lane) {
+    return 0;
+  }
+
+  const patterns = laneSignals[lane] ?? [];
+  const matches = patterns.reduce((sum, pattern) => sum + (pattern.test(text) ? 1 : 0), 0);
+  return Math.min(24, matches * 6);
+}
+
+function getAcceptanceThreshold(article: Pick<NormalizedArticle, "provider" | "queryLane" | "topic" | "laneEvidenceScore">) {
+  if (article.provider !== "gdelt") {
+    return 28;
+  }
+
+  let threshold = 30;
+  if (article.topic === "Shipping" || article.topic === "Energy" || article.topic === "Trade" || article.topic === "Monetary Policy") {
+    threshold -= 2;
+  }
+  if (article.laneEvidenceScore >= 12) {
+    threshold -= 4;
+  }
+  if (article.laneEvidenceScore >= 18) {
+    threshold -= 2;
+  }
+
+  return Math.max(22, threshold);
+}
+
+function scoreMarketRelevance(title: string, summary: string, topic: Topic, provider: string, lane?: string) {
   const text = `${title} ${summary}`.toLowerCase();
+  const laneEvidenceScore = getLaneEvidenceScore(text, lane);
 
   const strongSignals = [
     /central bank/,
@@ -235,16 +285,28 @@ function scoreMarketRelevance(title: string, summary: string, topic: Topic) {
   let score = topicBase[topic];
   score += strongSignals.reduce((sum, pattern) => sum + (pattern.test(text) ? 8 : 0), 0);
   score -= weakSignals.reduce((sum, pattern) => sum + (pattern.test(text) ? 10 : 0), 0);
+  score += laneEvidenceScore;
 
   if (/\byen\b|\bdollar\b|\btreasury\b|\bbrent\b|\bwti\b|\bcopper\b|\bsemiconductor\b/.test(text)) score += 5;
   if (/quarter|year|multi-year|outlook|medium term|long term|capacity|demand|supply/.test(text)) score += 5;
+  if (provider === "gdelt") score -= 4;
+  if (lane && (lane === "shipping" || lane === "monetary_policy" || lane === "energy" || lane === "trade")) score += 4;
 
   return Math.max(0, Math.min(100, score));
 }
 
-function getRejectionReason(title: string, summary: string, topic: Topic, marketRelevance: number) {
+function getRejectionReason(
+  title: string,
+  summary: string,
+  topic: Topic,
+  marketRelevance: number,
+  provider: string,
+  laneEvidenceScore: number,
+  lane?: string
+) {
   const text = `${title} ${summary}`.toLowerCase();
-  if (marketRelevance >= 28) {
+  const threshold = getAcceptanceThreshold({ provider, queryLane: lane, topic, laneEvidenceScore });
+  if (marketRelevance >= threshold) {
     return undefined;
   }
 
@@ -260,27 +322,117 @@ function getRejectionReason(title: string, summary: string, topic: Topic, market
     return "Energy story lacks durable demand, supply, or policy relevance.";
   }
 
+  if (provider === "gdelt" && lane && laneEvidenceScore === 0) {
+    return "GDELT discovery hit did not carry strong lane-specific evidence.";
+  }
+
   return "Insufficient evidence of medium-term market impact.";
 }
 
 function isRichEnoughForAgent(article: NormalizedArticle) {
-  return article.marketRelevance >= 28;
+  return article.marketRelevance >= getAcceptanceThreshold(article);
+}
+
+function canonicalizeArticleUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    parsed.protocol = "https:";
+    parsed.hash = "";
+    parsed.search = "";
+    const host = parsed.hostname.replace(/^www\./, "");
+    const pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    return `${host}${pathname}`;
+  } catch {
+    return url.toLowerCase().trim();
+  }
+}
+
+function deduplicateArticles(articles: NormalizedArticle[]) {
+  const deduped = new Map<string, NormalizedArticle>();
+
+  const priority = (article: NormalizedArticle) => {
+    let score = article.provider === "rss_bundle" ? 20 : article.provider === "gdelt" ? 10 : 15;
+    score += article.marketRelevance;
+    if (article.queryLane) score += 2;
+    return score;
+  };
+
+  for (const article of articles) {
+    const key = article.url !== "#" ? canonicalizeArticleUrl(article.url) : article.title.toLowerCase().replace(/\s+/g, " ").trim();
+    const existing = deduped.get(key);
+    if (!existing || priority(article) > priority(existing)) {
+      deduped.set(key, article);
+    }
+  }
+
+  return [...deduped.values()];
+}
+
+function buildGdeltDebug(articles: NormalizedArticle[]) {
+  const laneBreakdown = new Map<string, { accepted: number; rejected: number }>();
+  let acceptedCount = 0;
+  let rejectedCount = 0;
+
+  for (const article of articles.filter((entry) => entry.provider === "gdelt")) {
+    const lane = article.queryLane ?? "unknown";
+    const current = laneBreakdown.get(lane) ?? { accepted: 0, rejected: 0 };
+    if (isRichEnoughForAgent(article)) {
+      current.accepted += 1;
+      acceptedCount += 1;
+    } else {
+      current.rejected += 1;
+      rejectedCount += 1;
+    }
+    laneBreakdown.set(lane, current);
+  }
+
+  return {
+    acceptedCount,
+    rejectedCount,
+    laneBreakdown: Object.fromEntries(laneBreakdown.entries())
+  };
+}
+
+function summarizeDebugArticle(article: NormalizedArticle) {
+  return {
+    id: article.id,
+    title: article.title,
+    summary: article.summary,
+    url: article.url,
+    source: article.source,
+    provider: article.provider,
+    lane: article.queryLane ?? "unknown",
+    topic: article.topic,
+    countryCode: article.countryCode,
+    region: article.region,
+    sentiment: article.sentiment,
+    publishedAt: article.publishedAt,
+    marketRelevance: article.marketRelevance,
+    laneEvidenceScore: article.laneEvidenceScore,
+    rejectedReason: article.rejectedReason
+  };
 }
 
 function normalizeSourceRecord(record: SourceRecord): NormalizedArticle {
   const title = record.title ?? "Untitled";
   const summary = record.summary ?? "";
+  const lane = typeof record.metadata.lane === "string" ? record.metadata.lane : undefined;
   const topic = inferTopic(`${title} ${summary}`);
   const sentiment = inferSentiment(`${title} ${summary}`);
-  const geo = inferGeo(`${title} ${summary}`, record.locations);
-  const marketRelevance = scoreMarketRelevance(title, summary, topic);
+  const geo = inferGeo(geoTextForRecord(record, lane), record.locations);
+  const laneEvidenceScore = getLaneEvidenceScore(`${title} ${summary}`.toLowerCase(), lane);
+  const marketRelevance = scoreMarketRelevance(title, summary, topic, record.provider, lane);
+  const sourceDomain = typeof record.metadata.domain === "string" ? record.metadata.domain : undefined;
 
   return {
     id: record.id,
     title,
     summary,
     url: record.url ?? "#",
-    source: record.provider,
+    source: sourceDomain ?? record.provider,
+    provider: record.provider,
+    queryLane: lane,
+    sourceDomain,
     publishedAt: safeIsoDate(record.publishedAt ?? record.updatedAt ?? record.fetchedAt),
     topic,
     region: geo.region,
@@ -288,7 +440,8 @@ function normalizeSourceRecord(record: SourceRecord): NormalizedArticle {
     sentiment,
     coordinates: geo.coordinates,
     marketRelevance,
-    rejectedReason: getRejectionReason(title, summary, topic, marketRelevance)
+    laneEvidenceScore,
+    rejectedReason: getRejectionReason(title, summary, topic, marketRelevance, record.provider, laneEvidenceScore, lane)
   };
 }
 
@@ -450,9 +603,16 @@ export async function getLiveIntel(): Promise<LiveIntelPayload> {
   ];
 
   const normalizedArticles = sourceRecords.map(normalizeSourceRecord);
-  const relevantArticles = normalizedArticles.filter(isRichEnoughForAgent);
-  const grouped = groupArticlesByCountryAndTopic(normalizedArticles);
+  const dedupedArticles = deduplicateArticles(normalizedArticles);
+  const relevantArticles = dedupedArticles.filter(isRichEnoughForAgent);
+  const grouped = groupArticlesByCountryAndTopic(dedupedArticles);
   const events = makeDisplayEvents(grouped.topicGroups);
+  const sourceBreakdown = dedupedArticles.reduce<Record<string, number>>((acc, article) => {
+    acc[article.provider] = (acc[article.provider] ?? 0) + 1;
+    return acc;
+  }, {});
+  const gdeltDebug = buildGdeltDebug(dedupedArticles);
+  const gdeltFetchDiagnostics = gdeltAdapter.getLastFetchDiagnostics();
 
   return {
     generatedAt: new Date().toISOString(),
@@ -462,8 +622,66 @@ export async function getLiveIntel(): Promise<LiveIntelPayload> {
       ingestedArticleCount: sourceRecords.length,
       groupedArticleCount: relevantArticles.length,
       countryCount: grouped.countries.length,
-      topicGroupCount: grouped.topicGroups.length
+      topicGroupCount: grouped.topicGroups.length,
+      sourceBreakdown,
+      gdelt: {
+        ...gdeltDebug,
+        fetchDiagnostics: gdeltFetchDiagnostics
+      }
     }
+  };
+}
+
+export async function getGdeltDebugSnapshot() {
+  const sourceRecords = await gdeltAdapter.fetchOnce();
+  const fetchDiagnostics = gdeltAdapter.getLastFetchDiagnostics();
+  const normalizedArticles = sourceRecords.map(normalizeSourceRecord);
+  const dedupedArticles = deduplicateArticles(normalizedArticles);
+  const accepted = dedupedArticles.filter(isRichEnoughForAgent);
+  const rejected = dedupedArticles.filter((article) => !isRichEnoughForAgent(article));
+  const byLane = new Map<
+    string,
+    {
+      accepted: ReturnType<typeof summarizeDebugArticle>[];
+      rejected: ReturnType<typeof summarizeDebugArticle>[];
+    }
+  >();
+
+  for (const article of accepted) {
+    const lane = article.queryLane ?? "unknown";
+    const current = byLane.get(lane) ?? { accepted: [], rejected: [] };
+    current.accepted.push(summarizeDebugArticle(article));
+    byLane.set(lane, current);
+  }
+
+  for (const article of rejected) {
+    const lane = article.queryLane ?? "unknown";
+    const current = byLane.get(lane) ?? { accepted: [], rejected: [] };
+    current.rejected.push(summarizeDebugArticle(article));
+    byLane.set(lane, current);
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    meta: {
+      ingestedArticleCount: sourceRecords.length,
+      dedupedArticleCount: dedupedArticles.length,
+      acceptedArticleCount: accepted.length,
+      rejectedArticleCount: rejected.length,
+      fetchDiagnostics,
+      laneBreakdown: Object.fromEntries(
+        [...byLane.entries()].map(([lane, value]) => [
+          lane,
+          {
+            accepted: value.accepted.length,
+            rejected: value.rejected.length
+          }
+        ])
+      )
+    },
+    accepted: accepted.map(summarizeDebugArticle),
+    rejected: rejected.map(summarizeDebugArticle),
+    byLane: Object.fromEntries(byLane.entries())
   };
 }
 

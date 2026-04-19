@@ -1,14 +1,13 @@
 import { BaseProviderAdapter } from "@/lib/providers/base/ProviderAdapter";
 import { SeismicEvent, SourceRecord } from "@/lib/providers/types";
 
-const feedUrl = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson";
-
 export class UsgsAdapter extends BaseProviderAdapter {
   constructor() {
     super("usgs_quakes", "official", "RT", "H");
   }
 
   async fetchOnce(): Promise<SourceRecord[]> {
+    const feedUrl = this.getEndpointUrl("daily_summary");
     const response = await fetch(feedUrl, { next: { revalidate: 60 } });
     if (!response.ok) {
       throw new Error("USGS feed fetch failed");
@@ -52,6 +51,7 @@ export class UsgsAdapter extends BaseProviderAdapter {
   }
 
   async fetchEvents(): Promise<SeismicEvent[]> {
+    const feedUrl = this.getEndpointUrl("daily_summary");
     const response = await fetch(feedUrl, { next: { revalidate: 60 } });
     if (!response.ok) {
       throw new Error("USGS feed fetch failed");

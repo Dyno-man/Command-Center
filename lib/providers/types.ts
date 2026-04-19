@@ -4,6 +4,13 @@ export type ReliabilityClass = "H" | "M" | "F";
 export type AuthType = "none" | "apiKey" | "basic" | "oauth" | "token" | "custom";
 export type AdapterKind = "rss" | "rest-poll" | "websocket" | "release-schedule";
 
+export interface ProviderEndpoint {
+  key: string;
+  url: string;
+  description?: string;
+  enabled?: boolean;
+}
+
 export interface ProviderDefinition {
   id: string;
   name: string;
@@ -13,6 +20,7 @@ export interface ProviderDefinition {
   authType: AuthType;
   adapterKind: AdapterKind;
   baseUrl?: string;
+  endpoints?: ProviderEndpoint[];
   pollIntervalSeconds?: number;
   maxRequestsPerMinute?: number;
   maxConnections?: number;

@@ -116,6 +116,20 @@ export interface LiveIntelPayload {
     groupedArticleCount: number;
     countryCount: number;
     topicGroupCount: number;
+    sourceBreakdown?: Record<string, number>;
+    gdelt?: {
+      acceptedCount: number;
+      rejectedCount: number;
+      laneBreakdown: Record<string, { accepted: number; rejected: number }>;
+      fetchDiagnostics?: Array<{
+        lane: string;
+        ok: boolean;
+        status?: number;
+        articleCount?: number;
+        error?: string;
+        durationMs: number;
+      }>;
+    };
   };
 }
 

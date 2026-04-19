@@ -9,6 +9,11 @@ export const providerRegistry: ProviderDefinition[] = [
     reliabilityClass: "H",
     authType: "none",
     adapterKind: "rss",
+    endpoints: [
+      { key: "bbc_world", url: "https://feeds.bbci.co.uk/news/world/rss.xml", description: "BBC World RSS", enabled: true },
+      { key: "bbc_business", url: "https://feeds.bbci.co.uk/news/business/rss.xml", description: "BBC Business RSS", enabled: true },
+      { key: "reuters_world", url: "https://feeds.reuters.com/Reuters/worldNews", description: "Reuters World RSS", enabled: true }
+    ],
     pollIntervalSeconds: 180,
     maxRequestsPerMinute: 20,
     enabledByDefault: true,
@@ -51,7 +56,15 @@ export const providerRegistry: ProviderDefinition[] = [
     reliabilityClass: "H",
     authType: "none",
     adapterKind: "rest-poll",
-    baseUrl: "https://earthquake.usgs.gov/earthquakes/feed/v1.0",
+    baseUrl: "https://earthquake.usgs.gov",
+    endpoints: [
+      {
+        key: "daily_summary",
+        url: "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson",
+        description: "Default daily earthquake GeoJSON feed",
+        enabled: true
+      }
+    ],
     pollIntervalSeconds: 60,
     enabledByDefault: true,
     criticalPath: true,
@@ -94,6 +107,44 @@ export const providerRegistry: ProviderDefinition[] = [
     authType: "none",
     adapterKind: "rest-poll",
     baseUrl: "https://api.gdeltproject.org/api/v2/doc",
+    endpoints: [
+      {
+        key: "energy",
+        url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=(oil OR gas OR lng OR refinery OR pipeline OR opec OR electricity OR "power grid") sourcelang:eng&mode=ArtList&maxrecords=20&format=json&timespan=24H',
+        description: "Energy and power stress discovery lane",
+        enabled: true
+      },
+      {
+        key: "shipping",
+        url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=(shipping OR maritime OR tanker OR freight OR cargo OR port OR "red sea" OR suez OR hormuz OR vessel) sourcelang:eng&mode=ArtList&maxrecords=20&format=json&timespan=24H',
+        description: "Shipping and route disruption discovery lane",
+        enabled: true
+      },
+      {
+        key: "trade",
+        url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=(tariff OR tariffs OR sanctions OR trade OR "supply chain" OR export OR import OR customs OR copper OR manufacturing) sourcelang:eng&mode=ArtList&maxrecords=20&format=json&timespan=24H',
+        description: "Trade, sanctions, and supply chain discovery lane",
+        enabled: true
+      },
+      {
+        key: "monetary_policy",
+        url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=("central bank" OR fed OR ecb OR boj OR "bank of england" OR inflation OR "interest rate" OR intervention OR yen OR currency) sourcelang:eng&mode=ArtList&maxrecords=20&format=json&timespan=24H',
+        description: "Central bank and FX discovery lane",
+        enabled: true
+      },
+      {
+        key: "semiconductors",
+        url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=(semiconductor OR semiconductors OR chip OR chipmaking OR "export control" OR foundry OR fab) sourcelang:eng&mode=ArtList&maxrecords=20&format=json&timespan=24H',
+        description: "Semiconductor policy and supply discovery lane",
+        enabled: true
+      },
+      {
+        key: "conflict",
+        url: 'https://api.gdeltproject.org/api/v2/doc/doc?query=(conflict OR strike OR attack OR blockade OR military OR drone OR missile OR protest OR unrest) sourcelang:eng&mode=ArtList&maxrecords=20&format=json&timespan=24H',
+        description: "Conflict and instability discovery lane",
+        enabled: true
+      }
+    ],
     pollIntervalSeconds: 300,
     enabledByDefault: true,
     criticalPath: false,
@@ -121,6 +172,14 @@ export const providerRegistry: ProviderDefinition[] = [
     authType: "none",
     adapterKind: "rest-poll",
     baseUrl: "https://api.reliefweb.int",
+    endpoints: [
+      {
+        key: "market_news_search",
+        url: 'https://api.reliefweb.int/v2/reports?appname=&limit=2',
+        description: "Default market-oriented article search",
+        enabled: true
+      }
+    ],
     pollIntervalSeconds: 600,
     enabledByDefault: false,
     criticalPath: false,
@@ -288,6 +347,14 @@ export const providerRegistry: ProviderDefinition[] = [
     authType: "none",
     adapterKind: "rest-poll",
     baseUrl: "https://api.coingecko.com/api/v3",
+    endpoints: [
+      {
+        key: "core_markets",
+        url: "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin,ethereum,solana,binancecoin&order=market_cap_desc&per_page=4&page=1&sparkline=false&price_change_percentage=24h",
+        description: "Default core crypto markets snapshot",
+        enabled: true
+      }
+    ],
     pollIntervalSeconds: 120,
     enabledByDefault: true,
     criticalPath: false,

@@ -1,15 +1,13 @@
 import { BaseProviderAdapter } from "@/lib/providers/base/ProviderAdapter";
 import { CryptoMarketSnapshot, SourceRecord } from "@/lib/providers/types";
 
-const marketUrl =
-  "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin,ethereum,solana,binancecoin&order=market_cap_desc&per_page=4&page=1&sparkline=false&price_change_percentage=24h";
-
 export class CoinGeckoAdapter extends BaseProviderAdapter {
   constructor() {
     super("coingecko", "public-feed", "NRT", "H");
   }
 
   async fetchOnce(): Promise<SourceRecord[]> {
+    const marketUrl = this.getEndpointUrl("core_markets");
     const response = await fetch(marketUrl, { next: { revalidate: 120 } });
     if (!response.ok) {
       throw new Error("CoinGecko market fetch failed");
@@ -49,6 +47,7 @@ export class CoinGeckoAdapter extends BaseProviderAdapter {
   }
 
   async fetchMarkets(): Promise<CryptoMarketSnapshot[]> {
+    const marketUrl = this.getEndpointUrl("core_markets");
     const response = await fetch(marketUrl, { next: { revalidate: 120 } });
     if (!response.ok) {
       throw new Error("CoinGecko market fetch failed");
