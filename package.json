@@ -1,0 +1,26 @@
+{
+  "name": "command-center",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@svg-maps/world": "^1.6.0",
+    "d3-geo": "^3.1.1",
+    "fast-xml-parser": "^5.3.0",
+    "next": "15.5.15",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "topojson-client": "^3.1.0",
+    "world-atlas": "^2.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.9.0"
+  }
+}
