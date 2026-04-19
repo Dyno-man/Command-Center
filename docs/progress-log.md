@@ -97,3 +97,14 @@
 2. improve geo extraction so country assignment is driven by entity quality instead of keyword heuristics
 3. add provider-backed primary-source adapters from the codex spec, starting with SEC EDGAR and Federal Register
 4. persist grouped article snapshots so recommendations can be audited over time
+
+## 2026-04-19
+
+### Recommendation Enforcement Pass
+
+- integrated `docs/agent/agent_source_of_truth.md` and `docs/agent/agent_response_format.md` into the OpenRouter recommendation flow with in-memory server caching
+- added structured response validation for `RECOMMEND`, `WATCH`, and `PASS` outputs before returning a course-of-action result
+- tightened the course-of-action route so it now behaves like a conservative long-horizon recommendation agent grounded in retrieved article evidence
+- added the planned historical intelligence store note to `docs/dev/architecture.md`
+- loosened validator parsing to tolerate common model markdown variations such as code fences and heading depth changes, and surfaced raw model text snippets in the UI when validation fails
+- tightened the live article gate so novelty, crime, and other weak general-interest stories are filtered out before country-topic grouping and agent recommendation

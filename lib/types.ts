@@ -68,20 +68,42 @@ export interface CountryIntel {
   latestPublishedAt: string;
 }
 
-export interface LlmCourseOfAction {
+export type Decision = "RECOMMEND" | "WATCH" | "PASS";
+
+export interface CourseOfActionResult {
+  decision: Decision;
+  whatHappened: string;
+  whyItMatters: string;
+  affectedAssets: string[];
+  analysis: string;
+  trade?: {
+    asset: string;
+    direction: string;
+    horizon: string;
+    thesis: string;
+    whyNow: string;
+    risks: string;
+    invalidation: string;
+    confidence: number;
+  };
+  watchConditions?: string;
+  passReason?: string;
+  rawModelText?: string;
+}
+
+export interface CourseOfActionResponse {
   status: "configured" | "not_configured" | "error";
   countryCode: string;
   topic: Topic;
   model: string;
-  recommendation: "go-for" | "ignore" | "monitor";
-  confidence: "low" | "medium" | "high";
-  summary: string;
-  reasoning: string[];
-  triggers: string[];
-  risks: string[];
-  promptPreview?: string;
+  result?: CourseOfActionResult;
+  promptPreview?: {
+    systemPrompt: string;
+    userPrompt: string;
+  };
   sources: SourceLink[];
-  rawText?: string;
+  rawModelText?: string;
+  validationError?: string;
   error?: string;
 }
 

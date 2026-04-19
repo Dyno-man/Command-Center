@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import styles from "@/app/page.module.css";
-import { CountryIntel, DashboardPayload, EventCluster, LlmCourseOfAction, Topic, TopicGroup } from "@/lib/types";
+import { CountryIntel, CourseOfActionResponse, DashboardPayload, EventCluster, Topic, TopicGroup } from "@/lib/types";
 import { WorldLocation } from "@/lib/world-map";
 
 function markerSize(articleCount: number) {
@@ -89,7 +89,7 @@ export function CommandCenterShell({
   const [mapTransform, setMapTransform] = useState({ x: 0, y: 0, scale: 1 });
   const [liveCountries, setLiveCountries] = useState<CountryIntel[]>([]);
   const [liveMeta, setLiveMeta] = useState<{ groupedArticleCount: number; ingestedArticleCount: number; countryCount: number; topicGroupCount: number } | null>(null);
-  const [recommendation, setRecommendation] = useState<LlmCourseOfAction | null>(null);
+  const [recommendation, setRecommendation] = useState<CourseOfActionResponse | null>(null);
   const [recommendationLoading, setRecommendationLoading] = useState(false);
 
   const countryIntel = liveCountries.length > 0 ? liveCountries : buildFallbackCountries(events);
@@ -276,12 +276,8 @@ export function CommandCenterShell({
         countryCode: selectedCountry.countryCode,
         topic: selectedGroup.topic,
         model: "unavailable",
-        recommendation: "monitor",
-        confidence: "low",
-        summary: "The recommendation request failed.",
-        reasoning: ["The backend could not complete the request."],
-        triggers: [],
-        risks: ["Check the API route and provider configuration."],
+        validationError: "The frontend could not reach the recommendation route.",
+        error: "The recommendation request failed.",
         sources: selectedGroup.articles.map((article) => ({
           source: article.source,
           title: article.title,
@@ -454,14 +450,34 @@ export function CommandCenterShell({
                   <div className={styles.recommendationBox}>
                     <p className={styles.insightLabel}>Agent Recommendation</p>
                     <p className={styles.recommendationHeadline}>
-                      {recommendation.recommendation} · {recommendation.confidence}
+                      {recommendation.result
+                        ? recommendation.result.decision
+                        : recommendation.status === "not_configured"
+                          ? "Prompt Preview"
+                          : "Structured Error"}
                     </p>
-                    <p className={styles.insightText}>{recommendation.summary}</p>
-                    {recommendation.reasoning.length > 0 ? (
+                    <p className={styles.insightText}>
+                      {recommendation.result?.whyItMatters ??
+                        recommendation.validationError ??
+                        recommendation.error ??
+                        "No recommendation returned."}
+                    </p>
+                    {recommendation.result ? (
                       <ul className={styles.recommendationList}>
-                        {recommendation.reasoning.map((item) => (
-                          <li key={item}>{item}</li>
-                        ))}
+                        <li>{recommendation.result.whatHappened}</li>
+                        <li>{recommendation.result.analysis}</li>
+                        {recommendation.result.trade ? <li>{`Trade: ${recommendation.result.trade.asset} · ${recommendation.result.trade.direction} · ${recommendation.result.trade.horizon} · confidence ${recommendation.result.trade.confidence}`}</li> : null}
+                        {recommendation.result.watchConditions ? <li>{recommendation.result.watchConditions}</li> : null}
+                        {recommendation.result.passReason ? <li>{recommendation.result.passReason}</li> : null}
+                      </ul>
+                    ) : recommendation.rawModelText ? (
+                      <ul className={styles.recommendationList}>
+                        <li>{recommendation.rawModelText.slice(0, 280)}</li>
+                      </ul>
+                    ) : recommendation.promptPreview ? (
+                      <ul className={styles.recommendationList}>
+                        <li>OpenRouter is not configured or unavailable for this request.</li>
+                        <li>The grounded system and user prompts were built successfully.</li>
                       </ul>
                     ) : null}
                   </div>

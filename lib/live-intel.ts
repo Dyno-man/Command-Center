@@ -1,8 +1,8 @@
 import {
   CountryIntel,
+  CourseOfActionResponse,
   EventCluster,
   LiveIntelPayload,
-  LlmCourseOfAction,
   Region,
   Sentiment,
   SourceLink,
@@ -12,12 +12,16 @@ import {
 } from "@/lib/types";
 import { coinGeckoAdapter, gdeltAdapter, rssAdapter } from "@/lib/providers";
 import { SourceRecord } from "@/lib/providers/types";
+import { getAgentPromptDocs } from "@/lib/agent-docs";
+import { validateCourseOfActionResponse } from "@/lib/course-of-action-validator";
 
 type NormalizedArticle = TopicArticle & {
   topic: Topic;
   region: Region;
   countryCode: string;
   coordinates: { x: number; y: number };
+  marketRelevance: number;
+  rejectedReason?: string;
 };
 
 type CountryHint = {
@@ -79,8 +83,8 @@ function inferTopic(text: string): Topic {
   if (/(ship|shipping|maritime|cargo|freight|tanker|port|red sea|strait|suez|vessel)/.test(lower)) return "Shipping";
   if (/(oil|gas|brent|wti|opec|refinery|energy|lng|pipeline|power grid|electricity)/.test(lower)) return "Energy";
   if (/(chip|semiconductor|ai|data center|export control|technology|chipmaking)/.test(lower)) return "Technology";
-  if (/(central bank|interest rate|inflation|boj|ecb|currency|fx|intervention|bond yields|rate cut|rate hike)/.test(lower)) return "Monetary Policy";
-  if (/(tariff|sanctions|trade|supply chain|copper|export|import|manufacturing|customs)/.test(lower)) return "Trade";
+  if (/(central bank|interest rate|inflation|boj|ecb|fed|bank of england|currency|fx|intervention|bond yields|rate cut|rate hike)/.test(lower)) return "Monetary Policy";
+  if (/(tariff|sanctions|trade|supply chain|copper|export|import|manufacturing|customs|industrial output)/.test(lower)) return "Trade";
   return "Defense";
 }
 
@@ -159,12 +163,117 @@ function makeAssets(topic: Topic) {
   return [{ asset: "Country Risk", type: "Theme" as const, direction: "Mixed" as const, confidence: 60, rationale: "The topic may affect local market narratives and related watchlists." }];
 }
 
+function scoreMarketRelevance(title: string, summary: string, topic: Topic) {
+  const text = `${title} ${summary}`.toLowerCase();
+
+  const strongSignals = [
+    /central bank/,
+    /\bfed\b/,
+    /\becb\b/,
+    /bank of england/,
+    /interest rate/,
+    /inflation/,
+    /tariff/,
+    /sanction/,
+    /export control/,
+    /shipping/,
+    /red sea/,
+    /suez/,
+    /hormuz/,
+    /\boil\b/,
+    /\bgas\b/,
+    /\blng\b/,
+    /refinery/,
+    /pipeline/,
+    /power grid/,
+    /electricity/,
+    /semiconductor/,
+    /supply chain/,
+    /manufacturing/,
+    /regulation/,
+    /regulatory/,
+    /policy/,
+    /earnings/,
+    /guidance/,
+    /production/,
+    /factory/,
+    /subsidy/,
+    /trade deal/,
+    /customs/
+  ];
+
+  const weakSignals = [
+    /patent/,
+    /prototype/,
+    /voice-controlled/,
+    /toilet/,
+    /pokemon/,
+    /celebrity/,
+    /film star/,
+    /actor/,
+    /rat poison/,
+    /baby food/,
+    /theft/,
+    /evacuation/,
+    /crime/,
+    /arrest/,
+    /lifestyle/,
+    /workplace tool/,
+    /digital twin/,
+    /launch event/
+  ];
+
+  const topicBase: Record<Topic, number> = {
+    Energy: 18,
+    "Monetary Policy": 20,
+    Trade: 18,
+    Shipping: 18,
+    Technology: 12,
+    Defense: 10
+  };
+
+  let score = topicBase[topic];
+  score += strongSignals.reduce((sum, pattern) => sum + (pattern.test(text) ? 8 : 0), 0);
+  score -= weakSignals.reduce((sum, pattern) => sum + (pattern.test(text) ? 10 : 0), 0);
+
+  if (/\byen\b|\bdollar\b|\btreasury\b|\bbrent\b|\bwti\b|\bcopper\b|\bsemiconductor\b/.test(text)) score += 5;
+  if (/quarter|year|multi-year|outlook|medium term|long term|capacity|demand|supply/.test(text)) score += 5;
+
+  return Math.max(0, Math.min(100, score));
+}
+
+function getRejectionReason(title: string, summary: string, topic: Topic, marketRelevance: number) {
+  const text = `${title} ${summary}`.toLowerCase();
+  if (marketRelevance >= 28) {
+    return undefined;
+  }
+
+  if (/(patent|prototype|voice-controlled|toilet|pokemon|theft|celebrity|film star|actor|rat poison|baby food|evacuation|crime)/.test(text)) {
+    return "Low-signal general-interest or novelty coverage.";
+  }
+
+  if (topic === "Technology" && !/(export control|semiconductor|supply chain|regulation|earnings|guidance)/.test(text)) {
+    return "Technology story lacks clear policy, supply-chain, or earnings relevance.";
+  }
+
+  if (topic === "Energy" && !/(oil|gas|lng|refinery|pipeline|power grid|electricity|opec|production|demand|supply)/.test(text)) {
+    return "Energy story lacks durable demand, supply, or policy relevance.";
+  }
+
+  return "Insufficient evidence of medium-term market impact.";
+}
+
+function isRichEnoughForAgent(article: NormalizedArticle) {
+  return article.marketRelevance >= 28;
+}
+
 function normalizeSourceRecord(record: SourceRecord): NormalizedArticle {
   const title = record.title ?? "Untitled";
   const summary = record.summary ?? "";
   const topic = inferTopic(`${title} ${summary}`);
   const sentiment = inferSentiment(`${title} ${summary}`);
   const geo = inferGeo(`${title} ${summary}`, record.locations);
+  const marketRelevance = scoreMarketRelevance(title, summary, topic);
 
   return {
     id: record.id,
@@ -177,14 +286,16 @@ function normalizeSourceRecord(record: SourceRecord): NormalizedArticle {
     region: geo.region,
     countryCode: geo.countryCode,
     sentiment,
-    coordinates: geo.coordinates
+    coordinates: geo.coordinates,
+    marketRelevance,
+    rejectedReason: getRejectionReason(title, summary, topic, marketRelevance)
   };
 }
 
 function groupArticlesByCountryAndTopic(articles: NormalizedArticle[]) {
   const grouped = new Map<string, NormalizedArticle[]>();
 
-  for (const article of articles) {
+  for (const article of articles.filter(isRichEnoughForAgent)) {
     const key = `${article.countryCode}-${article.topic}`;
     const bucket = grouped.get(key) ?? [];
     bucket.push(article);
@@ -295,18 +406,23 @@ function getTopicGroupSources(topicGroup: TopicGroup): SourceLink[] {
   }));
 }
 
-function buildOpenRouterPrompt(topicGroup: TopicGroup) {
+async function buildPromptPayload(topicGroup: TopicGroup) {
+  const docs = await getAgentPromptDocs();
   const sourceLines = topicGroup.articles
     .slice(0, 6)
     .map((article, index) => `${index + 1}. [${article.source}] ${article.title} (${article.publishedAt}) - ${article.summary}`)
     .join("\n");
 
-  return [
-    "You are the Command Center market action agent.",
-    "Work only from the retrieved evidence.",
-    "Do not invent catalysts, prices, or second-order effects that are not supported by the sources.",
-    "Return JSON with keys: recommendation, confidence, summary, reasoning, triggers, risks.",
-    "recommendation must be one of: go-for, ignore, monitor.",
+  const userPrompt = [
+    "Evaluate this country/topic cluster using only the retrieved evidence below.",
+    "This is a medium-term to long-term investment decision task for a 1 to 12 month horizon.",
+    "Do not use short-term trading logic, intraday framing, or weak tactical commentary.",
+    "Only issue RECOMMEND when the evidence supports a high-conviction, conservative idea.",
+    "Prefer WATCH or PASS when evidence is weak, indirect, speculative, or insufficiently confirmed.",
+    "Do not introduce generic market opinions or unsupported assumptions.",
+    "Respond in markdown only.",
+    "Start with the heading `## Decision` and follow the documented section order exactly.",
+    "Do not wrap the response in code fences.",
     "",
     `Country: ${topicGroup.countryCode}`,
     `Region: ${topicGroup.region}`,
@@ -316,8 +432,13 @@ function buildOpenRouterPrompt(topicGroup: TopicGroup) {
     "Retrieved articles:",
     sourceLines,
     "",
-    "Question: Should this cluster be ignored, monitored, or acted on for market positioning? Explain the rationale, the confirming triggers, and the main failure risks."
+    "Return the exact documented response structure."
   ].join("\n");
+
+  return {
+    systemPrompt: docs.systemPrompt,
+    userPrompt
+  };
 }
 
 export async function getLiveIntel(): Promise<LiveIntelPayload> {
@@ -329,6 +450,7 @@ export async function getLiveIntel(): Promise<LiveIntelPayload> {
   ];
 
   const normalizedArticles = sourceRecords.map(normalizeSourceRecord);
+  const relevantArticles = normalizedArticles.filter(isRichEnoughForAgent);
   const grouped = groupArticlesByCountryAndTopic(normalizedArticles);
   const events = makeDisplayEvents(grouped.topicGroups);
 
@@ -338,7 +460,7 @@ export async function getLiveIntel(): Promise<LiveIntelPayload> {
     events,
     meta: {
       ingestedArticleCount: sourceRecords.length,
-      groupedArticleCount: normalizedArticles.length,
+      groupedArticleCount: relevantArticles.length,
       countryCount: grouped.countries.length,
       topicGroupCount: grouped.topicGroups.length
     }
@@ -358,7 +480,7 @@ export async function getCountryTopicGroup(countryCode: string, topic: Topic) {
   );
 }
 
-export async function getCourseOfAction(countryCode: string, topic: Topic): Promise<LlmCourseOfAction> {
+export async function getCourseOfAction(countryCode: string, topic: Topic): Promise<CourseOfActionResponse> {
   const topicGroup = await getCountryTopicGroup(countryCode, topic);
   const model = process.env.OPENROUTER_MODEL ?? "openai/gpt-4o-mini";
 
@@ -368,18 +490,12 @@ export async function getCourseOfAction(countryCode: string, topic: Topic): Prom
       countryCode,
       topic,
       model,
-      recommendation: "ignore",
-      confidence: "low",
-      summary: "No grouped articles were found for this country/topic.",
-      reasoning: ["The requested country/topic pair does not exist in the current retrieved dataset."],
-      triggers: [],
-      risks: [],
       error: "Country/topic group not found.",
       sources: []
     };
   }
 
-  const prompt = buildOpenRouterPrompt(topicGroup);
+  const prompt = await buildPromptPayload(topicGroup);
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     return {
@@ -387,12 +503,6 @@ export async function getCourseOfAction(countryCode: string, topic: Topic): Prom
       countryCode: topicGroup.countryCode,
       topic: topicGroup.topic,
       model,
-      recommendation: "monitor",
-      confidence: "low",
-      summary: "OpenRouter is not configured yet. The recommendation prompt is ready for use once an API key is added.",
-      reasoning: ["The backend assembled the retrieved evidence and a constrained agent prompt, but no OpenRouter API key is available."],
-      triggers: ["Set OPENROUTER_API_KEY to enable live LLM recommendations."],
-      risks: ["Without an LLM call, this result is only a prompt preview and not a model judgment."],
       promptPreview: prompt,
       sources: getTopicGroupSources(topicGroup)
     };
@@ -408,15 +518,14 @@ export async function getCourseOfAction(countryCode: string, topic: Topic): Prom
       body: JSON.stringify({
         model,
         temperature: 0.2,
-        response_format: { type: "json_object" },
         messages: [
           {
             role: "system",
-            content: "You are a disciplined market intelligence analyst. Use only the supplied evidence."
+            content: prompt.systemPrompt
           },
           {
             role: "user",
-            content: prompt
+            content: prompt.userPrompt
           }
         ]
       })
@@ -429,12 +538,6 @@ export async function getCourseOfAction(countryCode: string, topic: Topic): Prom
         countryCode: topicGroup.countryCode,
         topic: topicGroup.topic,
         model,
-        recommendation: "monitor",
-        confidence: "low",
-        summary: "OpenRouter returned an error for this recommendation request.",
-        reasoning: ["The model call failed before a valid structured recommendation could be returned."],
-        triggers: [],
-        risks: ["Check OpenRouter credentials, model name, and network availability."],
         sources: getTopicGroupSources(topicGroup),
         promptPreview: prompt,
         error: errorText.slice(0, 400)
@@ -443,27 +546,37 @@ export async function getCourseOfAction(countryCode: string, topic: Topic): Prom
 
     const payload = await response.json();
     const rawContent = payload?.choices?.[0]?.message?.content;
-    const parsed = typeof rawContent === "string" ? JSON.parse(rawContent) : rawContent;
+    const rawText =
+      typeof rawContent === "string"
+        ? rawContent
+        : Array.isArray(rawContent)
+          ? rawContent
+              .map((part: { type?: string; text?: string }) => (part?.type === "text" ? part.text ?? "" : ""))
+              .join("")
+          : JSON.stringify(rawContent);
+    const validation = validateCourseOfActionResponse(rawText);
+
+    if (!validation.ok) {
+      return {
+        status: "error",
+        countryCode: topicGroup.countryCode,
+        topic: topicGroup.topic,
+        model,
+        sources: getTopicGroupSources(topicGroup),
+        rawModelText: rawText,
+        validationError: validation.error,
+        error: "Model response failed validation."
+      };
+    }
 
     return {
       status: "configured",
       countryCode: topicGroup.countryCode,
       topic: topicGroup.topic,
       model,
-      recommendation:
-        parsed?.recommendation === "go-for" || parsed?.recommendation === "ignore" || parsed?.recommendation === "monitor"
-          ? parsed.recommendation
-          : "monitor",
-      confidence:
-        parsed?.confidence === "high" || parsed?.confidence === "medium" || parsed?.confidence === "low"
-          ? parsed.confidence
-          : "medium",
-      summary: typeof parsed?.summary === "string" ? parsed.summary : "Recommendation generated.",
-      reasoning: Array.isArray(parsed?.reasoning) ? parsed.reasoning.filter((item: unknown) => typeof item === "string") : [],
-      triggers: Array.isArray(parsed?.triggers) ? parsed.triggers.filter((item: unknown) => typeof item === "string") : [],
-      risks: Array.isArray(parsed?.risks) ? parsed.risks.filter((item: unknown) => typeof item === "string") : [],
+      result: validation.result,
       sources: getTopicGroupSources(topicGroup),
-      rawText: typeof rawContent === "string" ? rawContent : JSON.stringify(rawContent)
+      rawModelText: rawText
     };
   } catch (error) {
     return {
@@ -471,12 +584,6 @@ export async function getCourseOfAction(countryCode: string, topic: Topic): Prom
       countryCode: topicGroup.countryCode,
       topic: topicGroup.topic,
       model,
-      recommendation: "monitor",
-      confidence: "low",
-      summary: "OpenRouter recommendation request failed.",
-      reasoning: ["The backend could not complete the model request."],
-      triggers: [],
-      risks: ["Inspect network access and OpenRouter configuration."],
       sources: getTopicGroupSources(topicGroup),
       promptPreview: prompt,
       error: error instanceof Error ? error.message : "Unknown error"
