@@ -480,6 +480,14 @@ export function CommandCenterShell({
                         <li>The grounded system and user prompts were built successfully.</li>
                       </ul>
                     ) : null}
+                    <div className={styles.followUpActions}>
+                      <Link
+                        className={styles.primaryButton}
+                        href={`/intel/follow-up?countryCode=${selectedGroup.countryCode}&topic=${encodeURIComponent(selectedGroup.topic)}`}
+                      >
+                        Open Follow-Up Workspace
+                      </Link>
+                    </div>
                   </div>
                 ) : null}
               </article>

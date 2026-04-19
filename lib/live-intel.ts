@@ -14,11 +14,13 @@ import { coinGeckoAdapter, gdeltAdapter, rssAdapter } from "@/lib/providers";
 import { SourceRecord } from "@/lib/providers/types";
 import { getAgentPromptDocs } from "@/lib/agent-docs";
 import { validateCourseOfActionResponse } from "@/lib/course-of-action-validator";
+import { upsertIntelArticles } from "@/lib/intel-store";
 
 type NormalizedArticle = TopicArticle & {
   provider: string;
   queryLane?: string;
   sourceDomain?: string;
+  canonicalKey: string;
   topic: Topic;
   region: Region;
   countryCode: string;
@@ -358,10 +360,9 @@ function deduplicateArticles(articles: NormalizedArticle[]) {
   };
 
   for (const article of articles) {
-    const key = article.url !== "#" ? canonicalizeArticleUrl(article.url) : article.title.toLowerCase().replace(/\s+/g, " ").trim();
-    const existing = deduped.get(key);
+    const existing = deduped.get(article.canonicalKey);
     if (!existing || priority(article) > priority(existing)) {
-      deduped.set(key, article);
+      deduped.set(article.canonicalKey, article);
     }
   }
 
@@ -417,22 +418,25 @@ function normalizeSourceRecord(record: SourceRecord): NormalizedArticle {
   const title = record.title ?? "Untitled";
   const summary = record.summary ?? "";
   const lane = typeof record.metadata.lane === "string" ? record.metadata.lane : undefined;
+  const url = record.url ?? "#";
   const topic = inferTopic(`${title} ${summary}`);
   const sentiment = inferSentiment(`${title} ${summary}`);
   const geo = inferGeo(geoTextForRecord(record, lane), record.locations);
   const laneEvidenceScore = getLaneEvidenceScore(`${title} ${summary}`.toLowerCase(), lane);
   const marketRelevance = scoreMarketRelevance(title, summary, topic, record.provider, lane);
   const sourceDomain = typeof record.metadata.domain === "string" ? record.metadata.domain : undefined;
+  const canonicalKey = url !== "#" ? canonicalizeArticleUrl(url) : title.toLowerCase().replace(/\s+/g, " ").trim();
 
   return {
     id: record.id,
     title,
     summary,
-    url: record.url ?? "#",
+    url,
     source: sourceDomain ?? record.provider,
     provider: record.provider,
     queryLane: lane,
     sourceDomain,
+    canonicalKey,
     publishedAt: safeIsoDate(record.publishedAt ?? record.updatedAt ?? record.fetchedAt),
     topic,
     region: geo.region,
@@ -442,6 +446,48 @@ function normalizeSourceRecord(record: SourceRecord): NormalizedArticle {
     marketRelevance,
     laneEvidenceScore,
     rejectedReason: getRejectionReason(title, summary, topic, marketRelevance, record.provider, laneEvidenceScore, lane)
+  };
+}
+
+function persistArticles(articles: NormalizedArticle[]) {
+  return upsertIntelArticles(
+    articles.map((article) => ({
+      canonicalKey: article.canonicalKey,
+      id: article.id,
+      provider: article.provider,
+      queryLane: article.queryLane,
+      source: article.source,
+      sourceDomain: article.sourceDomain,
+      url: article.url,
+      title: article.title,
+      summary: article.summary,
+      publishedAt: article.publishedAt,
+      topic: article.topic,
+      region: article.region,
+      countryCode: article.countryCode,
+      sentiment: article.sentiment,
+      marketRelevance: article.marketRelevance,
+      laneEvidenceScore: article.laneEvidenceScore,
+      acceptedForAnalysis: isRichEnoughForAgent(article),
+      rejectedReason: article.rejectedReason,
+      coordinates: article.coordinates
+    }))
+  );
+}
+
+async function prepareIntelArticles(sourceRecords: SourceRecord[]) {
+  const normalizedArticles = sourceRecords.map(normalizeSourceRecord);
+  const dedupedArticles = deduplicateArticles(normalizedArticles);
+  const acceptedArticles = dedupedArticles.filter(isRichEnoughForAgent);
+  const rejectedArticles = dedupedArticles.filter((article) => !isRichEnoughForAgent(article));
+  const persistence = persistArticles(dedupedArticles);
+
+  return {
+    normalizedArticles,
+    dedupedArticles,
+    acceptedArticles,
+    rejectedArticles,
+    persistence
   };
 }
 
@@ -602,9 +648,7 @@ export async function getLiveIntel(): Promise<LiveIntelPayload> {
     ...(gdeltRecords.status === "fulfilled" ? gdeltRecords.value : [])
   ];
 
-  const normalizedArticles = sourceRecords.map(normalizeSourceRecord);
-  const dedupedArticles = deduplicateArticles(normalizedArticles);
-  const relevantArticles = dedupedArticles.filter(isRichEnoughForAgent);
+  const { dedupedArticles, acceptedArticles, persistence } = await prepareIntelArticles(sourceRecords);
   const grouped = groupArticlesByCountryAndTopic(dedupedArticles);
   const events = makeDisplayEvents(grouped.topicGroups);
   const sourceBreakdown = dedupedArticles.reduce<Record<string, number>>((acc, article) => {
@@ -620,14 +664,15 @@ export async function getLiveIntel(): Promise<LiveIntelPayload> {
     events,
     meta: {
       ingestedArticleCount: sourceRecords.length,
-      groupedArticleCount: relevantArticles.length,
+      groupedArticleCount: acceptedArticles.length,
       countryCount: grouped.countries.length,
       topicGroupCount: grouped.topicGroups.length,
       sourceBreakdown,
       gdelt: {
         ...gdeltDebug,
         fetchDiagnostics: gdeltFetchDiagnostics
-      }
+      },
+      persistence
     }
   };
 }
@@ -635,10 +680,7 @@ export async function getLiveIntel(): Promise<LiveIntelPayload> {
 export async function getGdeltDebugSnapshot() {
   const sourceRecords = await gdeltAdapter.fetchOnce();
   const fetchDiagnostics = gdeltAdapter.getLastFetchDiagnostics();
-  const normalizedArticles = sourceRecords.map(normalizeSourceRecord);
-  const dedupedArticles = deduplicateArticles(normalizedArticles);
-  const accepted = dedupedArticles.filter(isRichEnoughForAgent);
-  const rejected = dedupedArticles.filter((article) => !isRichEnoughForAgent(article));
+  const { dedupedArticles, acceptedArticles, rejectedArticles, persistence } = await prepareIntelArticles(sourceRecords);
   const byLane = new Map<
     string,
     {
@@ -647,14 +689,14 @@ export async function getGdeltDebugSnapshot() {
     }
   >();
 
-  for (const article of accepted) {
+  for (const article of acceptedArticles) {
     const lane = article.queryLane ?? "unknown";
     const current = byLane.get(lane) ?? { accepted: [], rejected: [] };
     current.accepted.push(summarizeDebugArticle(article));
     byLane.set(lane, current);
   }
 
-  for (const article of rejected) {
+  for (const article of rejectedArticles) {
     const lane = article.queryLane ?? "unknown";
     const current = byLane.get(lane) ?? { accepted: [], rejected: [] };
     current.rejected.push(summarizeDebugArticle(article));
@@ -666,9 +708,10 @@ export async function getGdeltDebugSnapshot() {
     meta: {
       ingestedArticleCount: sourceRecords.length,
       dedupedArticleCount: dedupedArticles.length,
-      acceptedArticleCount: accepted.length,
-      rejectedArticleCount: rejected.length,
+      acceptedArticleCount: acceptedArticles.length,
+      rejectedArticleCount: rejectedArticles.length,
       fetchDiagnostics,
+      persistence,
       laneBreakdown: Object.fromEntries(
         [...byLane.entries()].map(([lane, value]) => [
           lane,
@@ -679,8 +722,8 @@ export async function getGdeltDebugSnapshot() {
         ])
       )
     },
-    accepted: accepted.map(summarizeDebugArticle),
-    rejected: rejected.map(summarizeDebugArticle),
+    accepted: acceptedArticles.map(summarizeDebugArticle),
+    rejected: rejectedArticles.map(summarizeDebugArticle),
     byLane: Object.fromEntries(byLane.entries())
   };
 }

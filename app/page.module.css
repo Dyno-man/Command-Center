@@ -49,6 +49,7 @@
 .recommendationBox { margin-top: 14px; border: 1px solid rgba(101,215,160,0.24); border-radius: 16px; padding: 12px 14px; background: rgba(101,215,160,0.08); }
 .recommendationHeadline { margin: 0 0 8px; font-weight: 700; text-transform: capitalize; }
 .recommendationList { margin: 10px 0 0; padding-left: 18px; color: var(--muted); }
+.followUpActions { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
 .topicCard { display: grid; gap: 10px; padding: 14px; text-align: left; border-radius: 16px; border: 1px solid rgba(120,185,255,0.14); background: rgba(255,255,255,0.03); color: var(--text); cursor: pointer; }
 .topicCardActive { border-color: rgba(136, 242, 255, 0.5); background: rgba(100, 221, 255, 0.08); }
 .topicCardHeader { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

@@ -130,6 +130,15 @@ export interface LiveIntelPayload {
         durationMs: number;
       }>;
     };
+    persistence?: {
+      totalProcessed: number;
+      insertedCount: number;
+      updatedCount: number;
+      existingCount: number;
+      newAcceptedCount: number;
+      cachedAcceptedCount: number;
+      skippedAnalysisCount: number;
+    };
   };
 }
 
