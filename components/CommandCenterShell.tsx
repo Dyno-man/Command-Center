@@ -3,11 +3,59 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import styles from "@/app/page.module.css";
-import { DashboardPayload, EventCluster } from "@/lib/types";
+import { CountryIntel, DashboardPayload, EventCluster, LlmCourseOfAction, Topic, TopicGroup } from "@/lib/types";
 import { WorldLocation } from "@/lib/world-map";
 
-function markerSize(impactScore: number) {
-  return Math.max(24, Math.min(44, Math.round(impactScore * 0.34)));
+function markerSize(articleCount: number) {
+  return Math.max(22, Math.min(48, 20 + articleCount * 3));
+}
+
+function buildFallbackCountries(events: EventCluster[]): CountryIntel[] {
+  const grouped = new Map<string, CountryIntel>();
+
+  for (const event of events) {
+    const group: TopicGroup = {
+      id: event.topicGroupId ?? `${event.countryCode}-${event.topic}`,
+      topic: event.topic,
+      countryCode: event.countryCode,
+      region: event.region,
+      summary: event.summary,
+      articleCount: event.sources.length,
+      latestPublishedAt: event.updatedAt,
+      sentiment: event.sentiment,
+      coordinates: event.coordinates,
+      articles: event.sources.map((source, index) => ({
+        id: `${event.id}-${index}`,
+        title: source.title,
+        summary: event.summary,
+        url: source.url,
+        source: source.source,
+        publishedAt: source.publishedAt,
+        sentiment: event.sentiment
+      }))
+    };
+
+    const existing = grouped.get(event.countryCode);
+    if (!existing) {
+      grouped.set(event.countryCode, {
+        countryCode: event.countryCode,
+        region: event.region,
+        coordinates: event.coordinates,
+        topicGroups: [group],
+        articleCount: group.articleCount,
+        latestPublishedAt: group.latestPublishedAt
+      });
+      continue;
+    }
+
+    existing.topicGroups.push(group);
+    existing.articleCount += group.articleCount;
+    if (+new Date(group.latestPublishedAt) > +new Date(existing.latestPublishedAt)) {
+      existing.latestPublishedAt = group.latestPublishedAt;
+    }
+  }
+
+  return [...grouped.values()];
 }
 
 export function CommandCenterShell({
@@ -33,39 +81,49 @@ export function CommandCenterShell({
       }
     | null
   >(null);
-  const [selectedId, setSelectedId] = useState(events[0]?.id);
   const [selectedCountryCode, setSelectedCountryCode] = useState("ALL");
-  const [topicFilter, setTopicFilter] = useState<EventCluster["topic"] | "ALL">("ALL");
-  const [sentimentFilter, setSentimentFilter] = useState<EventCluster["sentiment"] | "ALL">("ALL");
+  const [selectedTopic, setSelectedTopic] = useState<Topic | "ALL">("ALL");
+  const [sentimentFilter, setSentimentFilter] = useState<TopicGroup["sentiment"] | "ALL">("ALL");
   const [railOpen, setRailOpen] = useState(true);
-  const [cardPosition, setCardPosition] = useState({ x: 24, y: 360 });
+  const [cardPosition, setCardPosition] = useState({ x: 24, y: 340 });
   const [mapTransform, setMapTransform] = useState({ x: 0, y: 0, scale: 1 });
-  const [liveEvents, setLiveEvents] = useState<EventCluster[]>([]);
-  const [liveMeta, setLiveMeta] = useState<{ relevantArticleCount: number; ingestedArticleCount: number } | null>(null);
+  const [liveCountries, setLiveCountries] = useState<CountryIntel[]>([]);
+  const [liveMeta, setLiveMeta] = useState<{ groupedArticleCount: number; ingestedArticleCount: number; countryCount: number; topicGroupCount: number } | null>(null);
+  const [recommendation, setRecommendation] = useState<LlmCourseOfAction | null>(null);
+  const [recommendationLoading, setRecommendationLoading] = useState(false);
 
-  const activeEvents = liveEvents.length > 0 ? liveEvents : events;
-  const visibleEvents = useMemo(() => {
-    return activeEvents.filter((event) => {
-      if (selectedCountryCode && event.countryCode !== selectedCountryCode && selectedCountryCode !== "ALL") {
-        return false;
-      }
-      if (topicFilter !== "ALL" && event.topic !== topicFilter) return false;
-      if (sentimentFilter !== "ALL" && event.sentiment !== sentimentFilter) return false;
-      return true;
-    });
-  }, [activeEvents, selectedCountryCode, sentimentFilter, topicFilter]);
+  const countryIntel = liveCountries.length > 0 ? liveCountries : buildFallbackCountries(events);
 
-  const selectedEvent = visibleEvents.find((event) => event.id === selectedId) ?? visibleEvents[0] ?? activeEvents[0];
-  const selectedCountry = countries.find((country) => country.id.toUpperCase() === selectedEvent?.countryCode);
+  const filteredCountries = useMemo(() => {
+    return countryIntel
+      .map((country) => ({
+        ...country,
+        topicGroups: country.topicGroups.filter((group) => {
+          if (selectedTopic !== "ALL" && group.topic !== selectedTopic) return false;
+          if (sentimentFilter !== "ALL" && group.sentiment !== sentimentFilter) return false;
+          return true;
+        })
+      }))
+      .filter((country) => {
+        if (selectedCountryCode !== "ALL" && country.countryCode !== selectedCountryCode) return false;
+        return country.topicGroups.length > 0;
+      });
+  }, [countryIntel, selectedCountryCode, selectedTopic, sentimentFilter]);
+
+  const mapCountries = selectedCountryCode === "ALL" ? filteredCountries : filteredCountries.filter((country) => country.countryCode === selectedCountryCode);
+  const selectedCountry =
+    filteredCountries.find((country) => country.countryCode === selectedCountryCode) ??
+    filteredCountries[0] ??
+    countryIntel[0] ??
+    null;
+  const selectedGroup =
+    (selectedTopic !== "ALL" ? selectedCountry?.topicGroups.find((group) => group.topic === selectedTopic) : null) ??
+    selectedCountry?.topicGroups[0] ??
+    null;
+  const selectedWorldCountry = countries.find((country) => country.id.toUpperCase() === selectedCountry?.countryCode);
 
   useEffect(() => {
-    if (!visibleEvents.some((event) => event.id === selectedId) && visibleEvents[0]) {
-      setSelectedId(visibleEvents[0].id);
-    }
-  }, [selectedId, visibleEvents]);
-
-  useEffect(() => {
-    async function loadLiveEvents() {
+    async function loadLiveIntel() {
       try {
         const response = await fetch("/api/intel/live-events");
         if (!response.ok) {
@@ -73,16 +131,44 @@ export function CommandCenterShell({
         }
 
         const payload = await response.json();
-        setLiveEvents(payload.events ?? []);
+        setLiveCountries(payload.countries ?? []);
         setLiveMeta(payload.meta ?? null);
       } catch {
-        setLiveEvents([]);
+        setLiveCountries([]);
         setLiveMeta(null);
       }
     }
 
-    void loadLiveEvents();
+    void loadLiveIntel();
   }, []);
+
+  useEffect(() => {
+    if (selectedCountryCode === "ALL" || filteredCountries.some((country) => country.countryCode === selectedCountryCode)) {
+      return;
+    }
+    setSelectedCountryCode(filteredCountries[0]?.countryCode ?? "ALL");
+  }, [filteredCountries, selectedCountryCode]);
+
+  useEffect(() => {
+    if (!selectedCountry) {
+      setRecommendation(null);
+      return;
+    }
+
+    if (selectedTopic === "ALL") {
+      return;
+    }
+
+    if (selectedCountry.topicGroups.some((group) => group.topic === selectedTopic)) {
+      return;
+    }
+
+    setSelectedTopic(selectedCountry.topicGroups[0]?.topic ?? "ALL");
+  }, [selectedCountry, selectedTopic]);
+
+  useEffect(() => {
+    setRecommendation(null);
+  }, [selectedCountryCode, selectedTopic, sentimentFilter]);
 
   useEffect(() => {
     function handlePointerMove(event: PointerEvent) {
@@ -101,11 +187,11 @@ export function CommandCenterShell({
         return;
       }
 
-      setMapTransform((current) => ({
-        ...current,
-        x: dragState.current?.originX ?? current.x + deltaX,
-        y: dragState.current?.originY ?? current.y + deltaY
-      }));
+      setMapTransform({
+        x: dragState.current.originX + deltaX,
+        y: dragState.current.originY + deltaY,
+        scale: mapTransform.scale
+      });
     }
 
     function handlePointerUp(event: PointerEvent) {
@@ -121,7 +207,7 @@ export function CommandCenterShell({
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, []);
+  }, [mapTransform.scale]);
 
   function handleCardPointerDown(event: React.PointerEvent<HTMLElement>) {
     const target = event.target as HTMLElement;
@@ -164,39 +250,69 @@ export function CommandCenterShell({
     }));
   }
 
+  async function requestRecommendation() {
+    if (!selectedCountry || !selectedGroup) {
+      return;
+    }
+
+    setRecommendationLoading(true);
+    try {
+      const response = await fetch("/api/intel/course-of-action", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          countryCode: selectedCountry.countryCode,
+          topic: selectedGroup.topic
+        })
+      });
+
+      const payload = await response.json();
+      setRecommendation(payload);
+    } catch {
+      setRecommendation({
+        status: "error",
+        countryCode: selectedCountry.countryCode,
+        topic: selectedGroup.topic,
+        model: "unavailable",
+        recommendation: "monitor",
+        confidence: "low",
+        summary: "The recommendation request failed.",
+        reasoning: ["The backend could not complete the request."],
+        triggers: [],
+        risks: ["Check the API route and provider configuration."],
+        sources: selectedGroup.articles.map((article) => ({
+          source: article.source,
+          title: article.title,
+          url: article.url,
+          publishedAt: article.publishedAt
+        }))
+      });
+    } finally {
+      setRecommendationLoading(false);
+    }
+  }
+
   return (
     <main className={styles.page}>
       <div className={styles.shell}>
         <div className={styles.topBar}>
           <div className={styles.brandBlock}>
             <p className={styles.eyebrow}>Command Center</p>
-            <h1 className={styles.brandTitle}>Live World Risk Map</h1>
-            <p className={styles.brandSubtitle}>Interactive map for high-signal geopolitical and market events.</p>
+            <h1 className={styles.brandTitle}>Country Topic Intelligence Map</h1>
+            <p className={styles.brandSubtitle}>Click a country, inspect grouped topics, then ask the agent whether to ignore, monitor, or act.</p>
           </div>
-
-          <div className={styles.statusBlock}>
-            <p className={styles.eyebrow}>Status</p>
-            <p className={styles.statusText}>{visibleEvents.length} visible stories</p>
-            <p className={styles.statusMeta}>
-              {liveMeta
-                ? `${liveMeta.relevantArticleCount}/${liveMeta.ingestedArticleCount} articles passed live relevance`
-                : "Recovered baseline build"}
-            </p>
-          </div>
-        </div>
-
-        <section className={styles.mapStage}>
-          <div className={styles.mapBackdrop} />
-          <div className={styles.mapGrid} />
 
           <div className={styles.filterDock}>
             <div className={styles.filterHeader}>
-              <p className={styles.eyebrow}>Map Filters</p>
+              <p className={styles.eyebrow}>Filters</p>
               <button
                 type="button"
                 className={styles.filterReset}
                 onClick={() => {
-                  setTopicFilter("ALL");
+                  setSelectedCountryCode("ALL");
+                  setSelectedTopic("ALL");
                   setSentimentFilter("ALL");
                 }}
               >
@@ -208,23 +324,21 @@ export function CommandCenterShell({
                 <span>Country</span>
                 <select value={selectedCountryCode} onChange={(event) => setSelectedCountryCode(event.target.value)}>
                   <option value="ALL">All countries</option>
-                  {countries
-                    .filter((country) => activeEvents.some((event) => event.countryCode === country.id.toUpperCase()))
-                    .map((country) => (
-                      <option key={country.id} value={country.id.toUpperCase()}>
-                        {country.name}
+                  {countryIntel.map((country) => {
+                    const countryMeta = countries.find((entry) => entry.id.toUpperCase() === country.countryCode);
+                    return (
+                      <option key={country.countryCode} value={country.countryCode}>
+                        {countryMeta?.name ?? country.countryCode}
                       </option>
-                    ))}
+                    );
+                  })}
                 </select>
               </label>
               <label className={styles.filterField}>
                 <span>Topic</span>
-                <select
-                  value={topicFilter}
-                  onChange={(event) => setTopicFilter(event.target.value as EventCluster["topic"] | "ALL")}
-                >
+                <select value={selectedTopic} onChange={(event) => setSelectedTopic(event.target.value as Topic | "ALL")}>
                   <option value="ALL">All topics</option>
-                  {[...new Set(activeEvents.map((event) => event.topic))].map((topic) => (
+                  {[...new Set(countryIntel.flatMap((country) => country.topicGroups.map((group) => group.topic)))].map((topic) => (
                     <option key={topic} value={topic}>
                       {topic}
                     </option>
@@ -233,10 +347,7 @@ export function CommandCenterShell({
               </label>
               <label className={styles.filterField}>
                 <span>Sentiment</span>
-                <select
-                  value={sentimentFilter}
-                  onChange={(event) => setSentimentFilter(event.target.value as EventCluster["sentiment"] | "ALL")}
-                >
+                <select value={sentimentFilter} onChange={(event) => setSentimentFilter(event.target.value as TopicGroup["sentiment"] | "ALL")}>
                   <option value="ALL">All sentiment</option>
                   <option value="negative">Negative</option>
                   <option value="neutral">Neutral</option>
@@ -245,6 +356,21 @@ export function CommandCenterShell({
               </label>
             </div>
           </div>
+
+          <div className={styles.statusBlock}>
+            <p className={styles.eyebrow}>Harness Status</p>
+            <p className={styles.statusText}>{filteredCountries.length} countries in view</p>
+            <p className={styles.statusMeta}>
+              {liveMeta
+                ? `${liveMeta.groupedArticleCount}/${liveMeta.ingestedArticleCount} articles grouped into ${liveMeta.topicGroupCount} country-topic buckets`
+                : `${dashboard.topStories.length} fallback events loaded`}
+            </p>
+          </div>
+        </div>
+
+        <section className={styles.mapStage}>
+          <div className={styles.mapBackdrop} />
+          <div className={styles.mapGrid} />
 
           <div ref={stageRef} className={styles.mapViewport} onPointerDown={handleMapPointerDown} onWheel={handleMapWheel}>
             <div
@@ -257,14 +383,14 @@ export function CommandCenterShell({
                 <g>
                   {countries.map((location) => {
                     const code = location.id.toUpperCase();
-                    const isSelected = code === selectedEvent?.countryCode;
-                    const isActive = visibleEvents.some((event) => event.countryCode === code);
+                    const hasIntel = countryIntel.some((country) => country.countryCode === code);
+                    const isSelected = code === selectedCountry?.countryCode;
 
                     return (
                       <path
                         key={location.id}
                         d={location.path}
-                        className={`${styles.countryPath} ${isSelected ? styles.countryPathSelected : ""} ${isActive ? styles.countryPathActive : ""}`}
+                        className={`${styles.countryPath} ${isSelected ? styles.countryPathSelected : ""} ${hasIntel ? styles.countryPathActive : ""}`}
                         onClick={() => setSelectedCountryCode(code)}
                       />
                     );
@@ -272,53 +398,74 @@ export function CommandCenterShell({
                 </g>
               </svg>
 
-              {visibleEvents.map((event) => (
+              {mapCountries.map((country) => (
                 <button
-                  key={event.id}
+                  key={country.countryCode}
                   type="button"
                   className={styles.marker}
-                  style={{ left: `${event.coordinates.x}%`, top: `${event.coordinates.y}%` }}
-                  onClick={() => setSelectedId(event.id)}
+                  style={{ left: `${country.coordinates.x}%`, top: `${country.coordinates.y}%` }}
+                  onClick={() => setSelectedCountryCode(country.countryCode)}
                 >
                   <span
                     className={`${styles.pulse} ${
-                      event.sentiment === "negative" ? styles.negative : event.sentiment === "positive" ? styles.positive : styles.neutral
+                      country.topicGroups.some((group) => group.sentiment === "negative")
+                        ? styles.negative
+                        : country.topicGroups.some((group) => group.sentiment === "positive")
+                          ? styles.positive
+                          : styles.neutral
                     }`}
-                    style={{ width: markerSize(event.impactScore), height: markerSize(event.impactScore) }}
+                    style={{ width: markerSize(country.articleCount), height: markerSize(country.articleCount) }}
                   >
-                    {event.impactScore}
+                    {country.topicGroups.length}
                   </span>
                 </button>
               ))}
             </div>
 
-            {selectedEvent ? (
+            {selectedGroup ? (
               <article
                 className={styles.focusCard}
                 style={{ left: cardPosition.x, top: cardPosition.y }}
                 onPointerDown={handleCardPointerDown}
               >
-                <p className={styles.eyebrow}>Selected Event</p>
-                <h2 className={styles.focusHeadline}>{selectedEvent.headline}</h2>
-                <p className={styles.focusSummary}>
-                  <strong>{selectedCountry?.name ?? selectedEvent.countryCode}</strong>
-                  {" • "}
-                  {selectedEvent.whyItMatters}
-                </p>
+                <p className={styles.eyebrow}>Selected Topic</p>
+                <h2 className={styles.focusHeadline}>
+                  {selectedWorldCountry?.name ?? selectedGroup.countryCode} · {selectedGroup.topic}
+                </h2>
+                <p className={styles.focusSummary}>{selectedGroup.summary}</p>
                 <div className={styles.metaRow}>
-                  <span className={styles.pill}>{selectedEvent.region}</span>
-                  <span className={styles.pill}>{selectedEvent.topic}</span>
-                  <span className={styles.pill}>Impact {selectedEvent.impactScore}</span>
+                  <span className={styles.pill}>{selectedGroup.region}</span>
+                  <span className={styles.pill}>{selectedGroup.articleCount} articles</span>
+                  <span className={styles.pill}>{selectedGroup.sentiment}</span>
                 </div>
                 <div className={styles.insightBox}>
-                  <p className={styles.insightLabel}>Actionable Insight</p>
-                  <p className={styles.insightText}>{selectedEvent.nextToWatch}</p>
+                  <p className={styles.insightLabel}>Agent Workflow</p>
+                  <p className={styles.insightText}>Review grouped evidence, then ask the LLM for a course of action grounded in these articles only.</p>
                 </div>
                 <div className={styles.focusActions}>
-                  <Link className={styles.primaryButton} href={`/events/${selectedEvent.id}`}>
-                    Inspect Event
+                  <button type="button" className={styles.primaryButton} onClick={requestRecommendation} disabled={recommendationLoading}>
+                    {recommendationLoading ? "Consulting LLM..." : "Recommend Course Of Action"}
+                  </button>
+                  <Link className={styles.filterReset} href={`/events/live-${selectedGroup.id}`}>
+                    Inspect Sources
                   </Link>
                 </div>
+                {recommendation ? (
+                  <div className={styles.recommendationBox}>
+                    <p className={styles.insightLabel}>Agent Recommendation</p>
+                    <p className={styles.recommendationHeadline}>
+                      {recommendation.recommendation} · {recommendation.confidence}
+                    </p>
+                    <p className={styles.insightText}>{recommendation.summary}</p>
+                    {recommendation.reasoning.length > 0 ? (
+                      <ul className={styles.recommendationList}>
+                        {recommendation.reasoning.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                ) : null}
               </article>
             ) : null}
           </div>
@@ -330,18 +477,50 @@ export function CommandCenterShell({
           </button>
           <header className={styles.railHeader}>
             <p className={styles.eyebrow}>Operator Rail</p>
-            <h2 className={styles.railTitle}>Actions, Briefings, Alerts</h2>
-            <p className={styles.railSubtitle}>Recovered baseline for continuing work.</p>
+            <h2 className={styles.railTitle}>{selectedWorldCountry?.name ?? "Country View"}</h2>
+            <p className={styles.railSubtitle}>
+              {selectedCountry
+                ? `${selectedCountry.topicGroups.length} grouped topics built from retrieved articles.`
+                : "Select a country to inspect grouped topics."}
+            </p>
           </header>
           <div className={styles.railContent}>
-            <div className={styles.sectionBody}>
-              {dashboard.actionableInsights.map((insight) => (
-                <div key={insight.id} className={styles.actionCard}>
-                  <h3 className={styles.cardTitle}>{insight.title}</h3>
-                  <p className={styles.cardCopy}>{insight.recommendation}</p>
+            {selectedCountry ? (
+              <div className={styles.sectionBody}>
+                {selectedCountry.topicGroups.map((group) => (
+                  <button
+                    key={group.id}
+                    type="button"
+                    className={`${styles.topicCard} ${selectedGroup?.id === group.id ? styles.topicCardActive : ""}`}
+                    onClick={() => {
+                      setSelectedCountryCode(group.countryCode);
+                      setSelectedTopic(group.topic);
+                    }}
+                  >
+                    <div className={styles.topicCardHeader}>
+                      <p className={styles.topicCardTitle}>{group.topic}</p>
+                      <span className={styles.topicCardCount}>{group.articleCount} articles</span>
+                    </div>
+                    <p className={styles.cardCopy}>{group.summary}</p>
+                    <div className={styles.topicArticleList}>
+                      {group.articles.slice(0, 3).map((article) => (
+                        <a key={article.id} className={styles.topicArticle} href={article.url} target="_blank" rel="noreferrer">
+                          <span>{article.title}</span>
+                          <small>{article.source}</small>
+                        </a>
+                      ))}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className={styles.sectionBody}>
+                <div className={styles.actionCard}>
+                  <h3 className={styles.cardTitle}>No country selected</h3>
+                  <p className={styles.cardCopy}>Choose a country on the map to inspect grouped coverage by topic.</p>
                 </div>
-              ))}
-            </div>
+              </div>
+            )}
           </div>
         </aside>
       </div>

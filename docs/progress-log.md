@@ -67,3 +67,33 @@
 
 - the `worldview` repo was used only for the worthwhile free-provider direction, primarily USGS and CoinGecko
 - IPTV/live-stream style sources were intentionally not pulled into the critical backend path
+
+### Agent Harness Refactor
+
+- reworked `lib/live-intel.ts` so the primary backend object is now country intelligence with topic groups and retrieved article lists
+- stopped using arbitrary relevance and operator scoring as the main product logic
+- kept the old `events` shape only as a derived display layer for the map shell
+- added `/api/intel/course-of-action` to request an LLM recommendation for a selected country/topic pair
+- made the OpenRouter flow config driven with:
+  - `OPENROUTER_API_KEY`
+  - `OPENROUTER_MODEL`
+- if OpenRouter is not configured, the backend now returns a prompt preview instead of pretending it produced a real recommendation
+- updated the homepage shell so:
+  - the map is still primary
+  - country clicks drive country selection
+  - the operator rail lists grouped topics for the selected country
+  - the selected card is a country/topic card with a “Recommend Course Of Action” action
+
+### Current Behavior
+
+- live ingestion groups articles by `country + topic`
+- the rail is now a country drill-down rather than a generic action feed
+- the LLM recommendation step is explicit and grounded in the current grouped article set
+- country/topic/article retrieval is the intended harness foundation for future market-prediction agent rules
+
+### Next Best Steps
+
+1. write the actual agent operating rules in docs and enforce them in the OpenRouter prompt builder
+2. improve geo extraction so country assignment is driven by entity quality instead of keyword heuristics
+3. add provider-backed primary-source adapters from the codex spec, starting with SEC EDGAR and Federal Register
+4. persist grouped article snapshots so recommendations can be audited over time

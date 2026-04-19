@@ -31,6 +31,72 @@ export interface SourceLink {
   publishedAt: string;
 }
 
+export interface CountryCoordinates {
+  x: number;
+  y: number;
+}
+
+export interface TopicArticle {
+  id: string;
+  title: string;
+  summary: string;
+  url: string;
+  source: string;
+  publishedAt: string;
+  sentiment: Sentiment;
+}
+
+export interface TopicGroup {
+  id: string;
+  topic: Topic;
+  countryCode: string;
+  region: Region;
+  summary: string;
+  articleCount: number;
+  latestPublishedAt: string;
+  sentiment: Sentiment;
+  coordinates: CountryCoordinates;
+  articles: TopicArticle[];
+}
+
+export interface CountryIntel {
+  countryCode: string;
+  region: Region;
+  coordinates: CountryCoordinates;
+  topicGroups: TopicGroup[];
+  articleCount: number;
+  latestPublishedAt: string;
+}
+
+export interface LlmCourseOfAction {
+  status: "configured" | "not_configured" | "error";
+  countryCode: string;
+  topic: Topic;
+  model: string;
+  recommendation: "go-for" | "ignore" | "monitor";
+  confidence: "low" | "medium" | "high";
+  summary: string;
+  reasoning: string[];
+  triggers: string[];
+  risks: string[];
+  promptPreview?: string;
+  sources: SourceLink[];
+  rawText?: string;
+  error?: string;
+}
+
+export interface LiveIntelPayload {
+  generatedAt: string;
+  countries: CountryIntel[];
+  events: EventCluster[];
+  meta: {
+    ingestedArticleCount: number;
+    groupedArticleCount: number;
+    countryCount: number;
+    topicGroupCount: number;
+  };
+}
+
 export interface EventCluster {
   id: string;
   headline: string;
@@ -45,12 +111,10 @@ export interface EventCluster {
   urgencyScore: number;
   confidenceScore: number;
   updatedAt: string;
-  coordinates: {
-    x: number;
-    y: number;
-  };
+  coordinates: CountryCoordinates;
   affectedAssets: AssetImpact[];
   sources: SourceLink[];
+  topicGroupId?: string;
 }
 
 export interface DashboardPayload {
